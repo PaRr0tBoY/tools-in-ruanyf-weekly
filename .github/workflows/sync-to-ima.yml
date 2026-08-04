@@ -65,83 +65,12 @@ jobs:
               -d "$body"
           }
           
-          check_repeated() {
-            ima_api "openapi/wiki/v1/check_repeated_names" "$1"
-          }
-          
           create_media() {
             ima_api "openapi/wiki/v1/create_media" "$1"
           }
           
           add_knowledge() {
             ima_api "openapi/wiki/v1/add_knowledge" "$1"
-          }
-          
-          cos_upload() {
-            node -e "
-              const crypto = require('crypto');
-              const https = require('https');
-              const fs = require('fs');
-              
-              const args = {};
-              // node -e 脚本：argv[1] 开始是传入的参数（-e 代码不占 argv 位置）
-              process.argv.slice(1).forEach((v,i,a) => {
-                if (v.startsWith('--')) args[v.slice(2)] = a[i+1];
-              });
-              
-              const secretId = args['secret-id'];
-              const secretKey = args['secret-key'];
-              const token = args['token'];
-              const bucket = args['bucket'];
-              const region = args['region'];
-              const cosKey = args['cos-key'];
-              const file = args['file'];
-              const contentType = args['content-type'];
-              const startTime = parseInt(args['start-time']);
-              const expiredTime = parseInt(args['expired-time']);
-              
-              const fileBuffer = fs.readFileSync(file);
-              const fileSize = fileBuffer.length;
-              
-              const keyTime = startTime + ';' + expiredTime;
-              const signKey = crypto.createHmac('sha1', secretKey).update(keyTime).digest('hex');
-              
-              const headerKeys = ['host', 'content-length'].sort();
-              const httpHeaders = headerKeys.map(k => k.toLowerCase() + '=' + (k === 'host' ? encodeURIComponent(bucket + '.cos.' + region + '.myqcloud.com') : fileSize)).join('&');
-              const httpString = 'PUT\n/' + cosKey + '\n\n' + httpHeaders + '\n';
-              const stringToSign = 'sha1\n' + keyTime + '\n' + crypto.createHash('sha1').update(httpString).digest('hex') + '\n';
-              const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
-              
-              const authorization = 'q-sign-algorithm=sha1&q-ak=' + secretId + '&q-sign-time=' + keyTime + '&q-key-time=' + keyTime + '&q-header-list=' + headerKeys.join(';') + '&q-url-param-list=&q-signature=' + signature;
-              
-              const url = 'https://' + bucket + '.cos.' + region + '.myqcloud.com/' + cosKey;
-              
-              const req = https.request(url, {
-                method: 'PUT',
-                headers: {
-                  'Authorization': authorization,
-                  'Content-Length': fileSize,
-                  'Content-Type': contentType,
-                  'x-cos-security-token': token,
-                  'Host': bucket + '.cos.' + region + '.myqcloud.com'
-                }
-              }, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                  if (res.statusCode >= 200 && res.statusCode < 300) {
-                    console.log(JSON.stringify({ success: true, statusCode: res.statusCode }));
-                  } else {
-                    console.error('Upload failed: ' + data);
-                    process.exit(1);
-                  }
-                });
-              });
-              
-              req.on('error', (e) => { console.error(e); process.exit(1); });
-              req.write(fileBuffer);
-              req.end();
-            " "$@"
           }
           
           # 上传每个文件
@@ -185,8 +114,8 @@ jobs:
             START_TIME=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).start_time||'')")
             EXPIRED_TIME=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).expired_time||'')")
             
-            # COS 上传
-            cos_upload \
+            # COS 上传（使用独立脚本）
+            node .github/workflows/cos-upload.js \
               --file "docs/$file" \
               --secret-id "$SECRET_ID" \
               --secret-key "$SECRET_KEY" \
