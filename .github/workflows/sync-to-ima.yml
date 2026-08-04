@@ -162,7 +162,8 @@ jobs:
 
       - name: Update fork to match upstream
         if: steps.check.outputs.has_new == 'true'
+        continue-on-error: true
         run: |
           git checkout master
-          git merge upstream/master --no-edit
-          git push origin master
+          git merge upstream/master --allow-unrelated-histories --no-edit || true
+          git push origin master || true
