@@ -115,7 +115,7 @@ jobs:
             EXPIRED_TIME=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).expired_time||'')")
             
             # COS 上传（使用独立脚本）
-            node .github/workflows/cos-upload.js \
+            node .github/workflows/cos-upload.cjs \
               --file "docs/$file" \
               --secret-id "$SECRET_ID" \
               --secret-key "$SECRET_KEY" \
