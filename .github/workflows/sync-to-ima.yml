@@ -84,7 +84,8 @@ jobs:
               const fs = require('fs');
               
               const args = {};
-              process.argv.slice(2).forEach((v,i,a) => {
+              // node -e 脚本：argv[1] 开始是传入的参数（-e 代码不占 argv 位置）
+              process.argv.slice(1).forEach((v,i,a) => {
                 if (v.startsWith('--')) args[v.slice(2)] = a[i+1];
               });
               
