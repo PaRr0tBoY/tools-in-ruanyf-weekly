@@ -39,7 +39,7 @@ const host = bucket + '.cos.' + region + '.myqcloud.com';
 const httpHeaders = headerKeys.map(k =>
   k.toLowerCase() + '=' + (k === 'host' ? host : String(fileSize))
 ).join('&');
-const httpString = 'PUT\n/' + cosKey + '\n\n' + httpHeaders + '\n';
+const httpString = 'put\n/' + cosKey + '\n\n' + httpHeaders + '\n';
 const stringToSign = 'sha1\n' + keyTime + '\n' + crypto.createHash('sha1').update(httpString).digest('hex') + '\n';
 const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
 
