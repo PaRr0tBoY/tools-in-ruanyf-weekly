@@ -34,11 +34,10 @@ const fileSize = fileBuffer.length;
 const keyTime = startTime + ';' + expiredTime;
 const signKey = crypto.createHmac('sha1', secretKey).update(keyTime).digest('hex');
 
-const headerKeys = ['host', 'content-length'].sort();
+const headerKeys = ['content-length', 'host']; // 按字母顺序
+const host = bucket + '.cos.' + region + '.myqcloud.com';
 const httpHeaders = headerKeys.map(k =>
-  k.toLowerCase() + '=' + (k === 'host'
-    ? encodeURIComponent(bucket + '.cos.' + region + '.myqcloud.com')
-    : fileSize)
+  k.toLowerCase() + '=' + (k === 'host' ? host : String(fileSize))
 ).join('&');
 const httpString = 'PUT\n/' + cosKey + '\n\n' + httpHeaders + '\n';
 const stringToSign = 'sha1\n' + keyTime + '\n' + crypto.createHash('sha1').update(httpString).digest('hex') + '\n';
