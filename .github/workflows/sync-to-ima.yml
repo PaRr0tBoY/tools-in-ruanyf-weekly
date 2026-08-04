@@ -1,0 +1,238 @@
+name: Sync docs to IMA Knowledge Base
+
+on:
+  schedule:
+    # 每 30 分钟检查一次
+    - cron: '*/30 * * * *'
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check upstream for new commits
+        id: check
+        run: |
+          git remote add upstream https://github.com/LiLittleCat/tools-in-ruanyf-weekly.git 2>/dev/null || true
+          git fetch upstream master --quiet
+          
+          LOCAL_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse upstream/master)
+          
+          echo "local=$LOCAL_SHA" >> $GITHUB_OUTPUT
+          echo "upstream=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          
+          if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "has_new=false" >> $GITHUB_OUTPUT
+            echo "No new commits"
+          else
+            echo "has_new=true" >> $GITHUB_OUTPUT
+            echo "New commits found: ${LOCAL_SHA:0:8} -> ${UPSTREAM_SHA:0:8}"
+          fi
+
+      - name: Download docs files
+        if: steps.check.outputs.has_new == 'true'
+        run: |
+          mkdir -p docs
+          for file in quotes.md resources.md tools.md; do
+            echo "Downloading $file..."
+            curl -sL "https://raw.githubusercontent.com/LiLittleCat/tools-in-ruanyf-weekly/master/docs/$file" -o "docs/$file"
+          done
+          echo "Downloaded files:"
+          ls -la docs/*.md
+
+      - name: Sync to IMA Knowledge Base
+        if: steps.check.outputs.has_new == 'true'
+        env:
+          IMA_CLIENT_ID: ${{ secrets.IMA_CLIENT_ID }}
+          IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
+          KB_ID: ${{ secrets.IMA_KB_ID }}
+        run: |
+          # IMA API 调用函数
+          ima_api() {
+            local path="$1"
+            local body="$2"
+            curl -sS -X POST "https://ima.qq.com/$path" \
+              -H "Content-Type: application/json" \
+              -H "ima-openapi-clientid: $IMA_CLIENT_ID" \
+              -H "ima-openapi-apikey: $IMA_API_KEY" \
+              -d "$body"
+          }
+          
+          check_repeated() {
+            ima_api "openapi/wiki/v1/check_repeated_names" "$1"
+          }
+          
+          create_media() {
+            ima_api "openapi/wiki/v1/create_media" "$1"
+          }
+          
+          add_knowledge() {
+            ima_api "openapi/wiki/v1/add_knowledge" "$1"
+          }
+          
+          cos_upload() {
+            node -e "
+              const crypto = require('crypto');
+              const https = require('https');
+              const fs = require('fs');
+              
+              const args = {};
+              process.argv.slice(2).forEach((v,i,a) => {
+                if (v.startsWith('--')) args[v.slice(2)] = a[i+1];
+              });
+              
+              const secretId = args['secret-id'];
+              const secretKey = args['secret-key'];
+              const token = args['token'];
+              const bucket = args['bucket'];
+              const region = args['region'];
+              const cosKey = args['cos-key'];
+              const file = args['file'];
+              const contentType = args['content-type'];
+              const startTime = parseInt(args['start-time']);
+              const expiredTime = parseInt(args['expired-time']);
+              
+              const fileBuffer = fs.readFileSync(file);
+              const fileSize = fileBuffer.length;
+              
+              const keyTime = startTime + ';' + expiredTime;
+              const signKey = crypto.createHmac('sha1', secretKey).update(keyTime).digest('hex');
+              
+              const headerKeys = ['host', 'content-length'].sort();
+              const httpHeaders = headerKeys.map(k => k.toLowerCase() + '=' + (k === 'host' ? encodeURIComponent(bucket + '.cos.' + region + '.myqcloud.com') : fileSize)).join('&');
+              const httpString = 'PUT\n/' + cosKey + '\n\n' + httpHeaders + '\n';
+              const stringToSign = 'sha1\n' + keyTime + '\n' + crypto.createHash('sha1').update(httpString).digest('hex') + '\n';
+              const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
+              
+              const authorization = 'q-sign-algorithm=sha1&q-ak=' + secretId + '&q-sign-time=' + keyTime + '&q-key-time=' + keyTime + '&q-header-list=' + headerKeys.join(';') + '&q-url-param-list=&q-signature=' + signature;
+              
+              const url = 'https://' + bucket + '.cos.' + region + '.myqcloud.com/' + cosKey;
+              
+              const req = https.request(url, {
+                method: 'PUT',
+                headers: {
+                  'Authorization': authorization,
+                  'Content-Length': fileSize,
+                  'Content-Type': contentType,
+                  'x-cos-security-token': token,
+                  'Host': bucket + '.cos.' + region + '.myqcloud.com'
+                }
+              }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                  if (res.statusCode >= 200 && res.statusCode < 300) {
+                    console.log(JSON.stringify({ success: true, statusCode: res.statusCode }));
+                  } else {
+                    console.error('Upload failed: ' + data);
+                    process.exit(1);
+                  }
+                });
+              });
+              
+              req.on('error', (e) => { console.error(e); process.exit(1); });
+              req.write(fileBuffer);
+              req.end();
+            " "$@"
+          }
+          
+          # 上传每个文件
+          SUCCESS=0
+          FAIL=0
+          
+          for file in quotes.md resources.md tools.md; do
+            echo "Processing $file..."
+            FILE_SIZE=$(stat -c%s "docs/$file")
+            
+            # create_media
+            CREATE_RESULT=$(create_media '{
+              "file_name": "'$file'",
+              "file_size": '$FILE_SIZE',
+              "content_type": "text/markdown",
+              "knowledge_base_id": "'$KB_ID'",
+              "file_ext": "md"
+            }')
+            
+            MEDIA_ID=$(echo "$CREATE_RESULT" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).data?.media_id||'')")
+            
+            if [ -z "$MEDIA_ID" ]; then
+              echo "  [FAIL] create_media failed: $CREATE_RESULT"
+              FAIL=$((FAIL + 1))
+              continue
+            fi
+            echo "  media_id: ${MEDIA_ID:0:20}..."
+            
+            # 解析 COS 凭证
+            COS_DATA=$(echo "$CREATE_RESULT" | node -e "
+              const c = JSON.parse(require('fs').readFileSync(0,'utf8')).data?.cos_credential || {};
+              console.log(JSON.stringify(c))
+            ")
+            
+            SECRET_ID=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).secret_id||'')")
+            SECRET_KEY=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).secret_key||'')")
+            TOKEN=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).token||'')")
+            BUCKET=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).bucket_name||'')")
+            REGION=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).region||'')")
+            COS_KEY=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).cos_key||'')")
+            START_TIME=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).start_time||'')")
+            EXPIRED_TIME=$(echo "$COS_DATA" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).expired_time||'')")
+            
+            # COS 上传
+            cos_upload \
+              --file "docs/$file" \
+              --secret-id "$SECRET_ID" \
+              --secret-key "$SECRET_KEY" \
+              --token "$TOKEN" \
+              --bucket "$BUCKET" \
+              --region "$REGION" \
+              --cos-key "$COS_KEY" \
+              --content-type "text/markdown" \
+              --start-time "$START_TIME" \
+              --expired-time "$EXPIRED_TIME"
+            
+            # add_knowledge
+            ADD_RESULT=$(add_knowledge '{
+              "media_type": 7,
+              "media_id": "'$MEDIA_ID'",
+              "title": "'$file'",
+              "knowledge_base_id": "'$KB_ID'",
+              "file_info": {
+                "cos_key": "'$COS_KEY'",
+                "file_size": '$FILE_SIZE',
+                "file_name": "'$file'"
+              }
+            }')
+            
+            ADD_CODE=$(echo "$ADD_RESULT" | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).code)")
+            
+            if [ "$ADD_CODE" = "0" ]; then
+              echo "  ✓ Uploaded successfully"
+              SUCCESS=$((SUCCESS + 1))
+            else
+              echo "  [FAIL] add_knowledge failed: $ADD_RESULT"
+              FAIL=$((FAIL + 1))
+            fi
+          done
+          
+          echo ""
+          echo "=== Summary ==="
+          echo "Success: $SUCCESS"
+          echo "Failed: $FAIL"
+          
+          if [ $SUCCESS -eq 0 ]; then
+            exit 1
+          fi
+
+      - name: Update fork to match upstream
+        if: steps.check.outputs.has_new == 'true'
+        run: |
+          git checkout master
+          git merge upstream/master --no-edit
+          git push origin master
