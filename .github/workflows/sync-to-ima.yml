@@ -1,10 +1,10 @@
 name: Sync docs to IMA Knowledge Base
 
 on:
-  schedule:
-    # 每 30 分钟检查一次
-    - cron: '*/30 * * * *'
-  # 允许手动触发
+  # 暂时禁用定时触发，改为手动触发
+  # 等 fork 同步问题解决后再启用
+  # schedule:
+  #   - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -24,8 +24,15 @@ jobs:
       - name: Check if docs files changed
         id: check
         run: |
+          # 确保 upstream remote 存在
+          git remote add upstream https://github.com/LiLittleCat/tools-in-ruanyf-weekly.git 2>/dev/null || true
+          git fetch upstream master --quiet
+          
           # 获取 fork 和 upstream 在 docs 目录的差异
           CHANGED_FILES=$(git diff --name-only HEAD upstream/master -- docs/ 2>/dev/null || true)
+          
+          echo "Changed files in docs/:"
+          echo "$CHANGED_FILES"
           
           # 只关心我们需要的 3 个文件
           NEED_SYNC=false
@@ -51,7 +58,7 @@ jobs:
           if [ "$NEED_SYNC" = "true" ]; then
             echo "Files to sync:$SYNC_FILES"
           else
-            echo "No changes detected"
+            echo "No changes detected, skipping sync"
           fi
 
       - name: Download changed docs files
