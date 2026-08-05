@@ -73,15 +73,32 @@ jobs:
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
           KB_ID: ${{ secrets.IMA_KB_ID }}
         run: |
-          # IMA API 调用函数
+          # IMA API 调用函数（带重试）
           ima_api() {
             local path="$1"
             local body="$2"
-            curl -sS -X POST "https://ima.qq.com/$path" \
-              -H "Content-Type: application/json" \
-              -H "ima-openapi-clientid: $IMA_CLIENT_ID" \
-              -H "ima-openapi-apikey: $IMA_API_KEY" \
-              -d "$body"
+            local max_retries=3
+            local retry=0
+            
+            while [ $retry -lt $max_retries ]; do
+              resp=$(curl -sS --connect-timeout 30 --max-time 120 -X POST "https://ima.qq.com/$path" \
+                -H "Content-Type: application/json" \
+                -H "ima-openapi-clientid: $IMA_CLIENT_ID" \
+                -H "ima-openapi-apikey: $IMA_API_KEY" \
+                -d "$body" 2>&1)
+              
+              if [ $? -eq 0 ]; then
+                echo "$resp"
+                return 0
+              fi
+              
+              retry=$((retry + 1))
+              echo "  Retry $retry/$max_retries..." >&2
+              sleep 5
+            done
+            
+            echo "$resp"
+            return 1
           }
           
           create_media() {
