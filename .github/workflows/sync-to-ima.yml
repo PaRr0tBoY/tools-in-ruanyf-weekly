@@ -14,41 +14,60 @@ jobs:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Check upstream for new commits
-        id: check
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/LiLittleCat/tools-in-ruanyf-weekly.git 2>/dev/null || true
-          git fetch upstream master --quiet
+          git fetch upstream master
+
+      - name: Check if docs files changed
+        id: check
+        run: |
+          # 获取 fork 和 upstream 在 docs 目录的差异
+          CHANGED_FILES=$(git diff --name-only HEAD upstream/master -- docs/ 2>/dev/null || true)
           
-          LOCAL_SHA=$(git rev-parse HEAD)
-          UPSTREAM_SHA=$(git rev-parse upstream/master)
+          # 只关心我们需要的 3 个文件
+          NEED_SYNC=false
+          SYNC_FILES=""
           
-          echo "local=$LOCAL_SHA" >> $GITHUB_OUTPUT
-          echo "upstream=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          for target in quotes.md resources.md tools.md; do
+            if echo "$CHANGED_FILES" | grep -q "docs/$target"; then
+              NEED_SYNC=true
+              SYNC_FILES="$SYNC_FILES $target"
+            fi
+          done
           
-          if [ "$LOCAL_SHA" = "$UPSTREAM_SHA" ]; then
-            echo "has_new=false" >> $GITHUB_OUTPUT
-            echo "No new commits"
+          # 也检查是否从未同步过（通过检查是否有状态文件）
+          if [ ! -f .sync-state.json ]; then
+            echo "No sync state found, will sync all files"
+            NEED_SYNC=true
+            SYNC_FILES="quotes.md resources.md tools.md"
+          fi
+          
+          echo "need_sync=$NEED_SYNC" >> $GITHUB_OUTPUT
+          echo "sync_files=$SYNC_FILES" >> $GITHUB_OUTPUT
+          
+          if [ "$NEED_SYNC" = "true" ]; then
+            echo "Files to sync:$SYNC_FILES"
           else
-            echo "has_new=true" >> $GITHUB_OUTPUT
-            echo "New commits found: ${LOCAL_SHA:0:8} -> ${UPSTREAM_SHA:0:8}"
+            echo "No changes detected"
           fi
 
-      - name: Download docs files
-        if: steps.check.outputs.has_new == 'true'
+      - name: Download changed docs files
+        if: steps.check.outputs.need_sync == 'true'
         run: |
           mkdir -p docs
           for file in quotes.md resources.md tools.md; do
-            echo "Downloading $file..."
-            curl -sL "https://raw.githubusercontent.com/LiLittleCat/tools-in-ruanyf-weekly/master/docs/$file" -o "docs/$file"
+            echo "Downloading $file from upstream..."
+            git show "upstream/master:docs/$file" > "docs/$file" 2>/dev/null || \
+              curl -sL "https://raw.githubusercontent.com/LiLittleCat/tools-in-ruanyf-weekly/master/docs/$file" -o "docs/$file"
           done
           echo "Downloaded files:"
           ls -la docs/*.md
 
       - name: Sync to IMA Knowledge Base
-        if: steps.check.outputs.has_new == 'true'
+        if: steps.check.outputs.need_sync == 'true'
         env:
           IMA_CLIENT_ID: ${{ secrets.IMA_CLIENT_ID }}
           IMA_API_KEY: ${{ secrets.IMA_API_KEY }}
@@ -127,6 +146,12 @@ jobs:
               --start-time "$START_TIME" \
               --expired-time "$EXPIRED_TIME"
             
+            if [ $? -ne 0 ]; then
+              echo "  [FAIL] COS upload failed"
+              FAIL=$((FAIL + 1))
+              continue
+            fi
+            
             # add_knowledge
             ADD_RESULT=$(add_knowledge '{
               "media_type": 7,
@@ -161,9 +186,10 @@ jobs:
           fi
 
       - name: Update fork to match upstream
-        if: steps.check.outputs.has_new == 'true'
+        if: steps.check.outputs.need_sync == 'true'
         continue-on-error: true
         run: |
-          git checkout master
-          git merge upstream/master --allow-unrelated-histories --no-edit || true
-          git push origin master || true
+          # 强制同步 fork 到 upstream，避免下次重复触发
+          git checkout master 2>/dev/null || git checkout -b master
+          git reset --hard upstream/master
+          git push origin master --force
