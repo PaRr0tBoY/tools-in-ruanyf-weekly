@@ -1,10 +1,10 @@
 name: Sync docs to IMA Knowledge Base
 
 on:
-  # 暂时禁用定时触发，改为手动触发
-  # 等 fork 同步问题解决后再启用
-  # schedule:
-  #   - cron: '*/30 * * * *'
+  schedule:
+    # 每 30 分钟检查一次
+    - cron: '*/30 * * * *'
+  # 允许手动触发
   workflow_dispatch:
 
 jobs:
@@ -116,6 +116,10 @@ jobs:
             ima_api "openapi/wiki/v1/add_knowledge" "$1"
           }
           
+          # 使用时间戳作为文件名前缀，避免重复
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "Sync timestamp: $TIMESTAMP"
+          
           # 上传每个文件
           SUCCESS=0
           FAIL=0
@@ -123,10 +127,11 @@ jobs:
           for file in quotes.md resources.md tools.md; do
             echo "Processing $file..."
             FILE_SIZE=$(stat -c%s "docs/$file")
+            FILENAME="${TIMESTAMP}_${file}"
             
             # create_media
             CREATE_RESULT=$(create_media '{
-              "file_name": "'$file'",
+              "file_name": "'$FILENAME'",
               "file_size": '$FILE_SIZE',
               "content_type": "text/markdown",
               "knowledge_base_id": "'$KB_ID'",
@@ -180,12 +185,12 @@ jobs:
             ADD_RESULT=$(add_knowledge '{
               "media_type": 7,
               "media_id": "'$MEDIA_ID'",
-              "title": "'$file'",
+              "title": "'$FILENAME'",
               "knowledge_base_id": "'$KB_ID'",
               "file_info": {
                 "cos_key": "'$COS_KEY'",
                 "file_size": '$FILE_SIZE',
-                "file_name": "'$file'"
+                "file_name": "'$FILENAME'"
               }
             }')
             
@@ -209,11 +214,4 @@ jobs:
             exit 1
           fi
 
-      - name: Update fork to match upstream
-        if: steps.check.outputs.need_sync == 'true'
-        continue-on-error: true
-        run: |
-          # 强制同步 fork 到 upstream，避免下次重复触发
-          git checkout master 2>/dev/null || git checkout -b master
-          git reset --hard upstream/master
-          git push origin master --force
+      # Fork 同步步骤已移除（时间戳文件名方案不需要）
